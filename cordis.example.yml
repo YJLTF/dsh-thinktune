@@ -1,0 +1,39 @@
+# dsh-thinktune 装配示例。
+# 用法一（推荐）：合并进 $DSH_HOME/profiles/<profile>/cordis.patch.yml 的用户 patch 层；
+# 用法二：作为独立 overlay 传入：dsh web --patch ./cordis.example.yml
+#
+# provider 路由注册后，默认模型与档位建议写在 $DSH_HOME/settings.yaml
+# （与 Web UI 模型选择器写入的是同一位置）：
+#
+#   agent-default-model:
+#     provider: ollama
+#     model: qwen3:27b
+#     reasoningEffort: low
+
+- insert:
+    # 思考强度控制：Ollama 适配器（可改 strategy 切换控制协议）
+    - id: llm-thinktune
+      name: 'F:/project/dsh-thinktune/src/index.ts'
+      config:
+        providers:
+          - ollama
+        endpoint: 'http://127.0.0.1:11434'
+        strategy: native            # native | soft-switch | reasoning-effort | template-kwarg
+        # nativeLevels: true         # native + gpt-oss 等：think: "low"/"medium"/"high"
+        # offSentinel: none          # reasoning-effort 下 off 的线上值，或 omit
+        # defaultEffort: low         # 请求不带档位时的默认档位
+        # imageCapability: auto      # auto 跟随 /api/show vision；yes / no 强制
+        # imageMaxPixels: 1048576    # 单张请求图像素预算（w×h）
+        # imageMaxBytes: 4194304     # 单张请求图重编码字节目标
+        # imageMaxPerRequest: 8      # 单请求图片上限（0 关闭图片输入）
+        # efforts:                   # 自定义档位与 thinking 预算（template-kwarg）
+        #   - off
+        #   - low
+        #   - id: high
+        #     budget: 4096
+
+    # 把默认 agent 模型指到 Ollama（档位 reasoningEffort 建议走 settings.yaml）
+    - id: agent-default-model
+      config:
+        provider: ollama
+        model: qwen3:27b
