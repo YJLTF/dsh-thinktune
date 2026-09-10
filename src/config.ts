@@ -1,5 +1,5 @@
 /** Plugin configuration types and normalization shared by the entry point and the adapter. */
-import type { Strategy } from './efforts.ts'
+import type { EffortEntry, Strategy } from './efforts.ts'
 
 /** One advisory model entry: selector overrides plus per-model capacity facts. */
 export interface ModelEntry {
@@ -11,8 +11,47 @@ export interface ModelEntry {
   description?: string
   /** Combined request+response context capacity; wins over `/api/show` and the global default. */
   contextWindow?: number
-  /** Unused capacity knob reserved for parity with the catalog shape. */
+  /** Per-model output cap; wins over the global `defaultMaxTokens` for this model. */
   maxTokens?: number
+}
+
+/** Raw plugin configuration as produced by the schemastery schema. */
+export interface Config {
+  /** Provider routes this adapter registers (referenced as `provider` by agents). */
+  providers: string[]
+  /** Ollama base URL. */
+  endpoint: string
+  /** Optional env-var NAME holding a bearer token for gated endpoints; empty for none. */
+  apiKeyEnv?: string
+  /** Which thinking-control strategy the reasoning effort maps to. */
+  strategy: Strategy
+  /** `native` only: map low/medium/high to `think: "low"…` instead of `think: true`. */
+  nativeLevels: boolean
+  /** `reasoning-effort` only: wire value for `off` (`'none'`, `'minimal'`, or `'omit'`). */
+  offSentinel: string
+  /** Thinking capability: `auto` follows /api/show (assumes yes when unavailable); yes/no force it. */
+  assumeThinking: 'auto' | 'yes' | 'no'
+  /** Advertised reasoning efforts; defaults to off/low/medium/high. */
+  efforts: (string | EffortEntry)[]
+  /** Default effort the harness materializes for thinking-capable models that omit one. */
+  defaultEffort?: string
+  defaultContextWindow: number
+  defaultMaxTokens: number
+  streamIdleTimeoutMs: number
+  /** Whether assistant reasoning blocks replay to the provider in history. */
+  historyThinking: 'strip' | 'keep'
+  /** Advisory model catalog with optional capacity overrides. */
+  models: ModelEntry[]
+  /** Image input capability: `auto` follows /api/show `vision`; `yes`/`no` force it. */
+  imageCapability: 'auto' | 'yes' | 'no'
+  /** Aspect-preserving pixel budget per request image (width × height). */
+  imageMaxPixels: number
+  /** Encoded-byte target per request image after re-encoding. */
+  imageMaxBytes: number
+  /** Images accepted per request; oldest occurrences degrade to placeholder text. */
+  imageMaxPerRequest: number
+  /** Accumulated raw image bytes accepted per request before offloading. */
+  imageMaxRequestBytes: number
 }
 
 /** Fully normalized plugin configuration handed to the adapter. */
@@ -39,26 +78,7 @@ export interface ThinkTuneResolvedConfig {
 }
 
 /** Validate and normalize the raw schemastery-validated config into the resolved shape. */
-export function resolveConfig(raw: {
-  endpoint: string
-  providers: string[]
-  apiKeyEnv?: string
-  strategy: Strategy
-  nativeLevels: boolean
-  offSentinel: string
-  assumeThinking: 'auto' | 'yes' | 'no'
-  defaultEffort?: string
-  defaultContextWindow: number
-  defaultMaxTokens: number
-  streamIdleTimeoutMs: number
-  historyThinking: 'strip' | 'keep'
-  models: ModelEntry[]
-  imageCapability: 'auto' | 'yes' | 'no'
-  imageMaxPixels: number
-  imageMaxBytes: number
-  imageMaxPerRequest: number
-  imageMaxRequestBytes: number
-}): ThinkTuneResolvedConfig {
+export function resolveConfig(raw: Config): ThinkTuneResolvedConfig {
   if (raw.providers.length === 0) throw new Error('thinktune: providers must list at least one route name')
   let endpoint: URL
   try {

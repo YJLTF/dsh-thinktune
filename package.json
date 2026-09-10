@@ -1,6 +1,6 @@
 {
   "name": "dsh-thinktune",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Ollama LLM adapter for DeepSeek Harness with pluggable reasoning-effort (thinking intensity) control strategies",
@@ -13,18 +13,23 @@
     "README.md",
     "cordis.example.yml"
   ],
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",
     "test": "node test/run.mjs"
   },
   "dependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-attachment": "0.1.5-alpha.1",
-    "@deepseek-ai/dsh-llm": "0.1.5-alpha.1",
     "@deepseek-ai/schemastery": "^3.18.2"
   },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-attachment": "^0.1.5-alpha.2",
+    "@deepseek-ai/dsh-llm": "^0.1.5-alpha.2"
+  },
   "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.2"
   }

@@ -13,7 +13,7 @@
  * deterministic placeholder text once a request budget is exceeded.
  */
 import { LlmAdapter, LlmError, ReasoningEffortId, contentHasImage, offloadedImageText, offloadRequestImagesWithPolicy } from '@deepseek-ai/dsh-llm';
-import { nativeThinkValue, reasoningEffortValue, softSwitchMarker, templateKwargs, OFF_EFFORT_ID, } from "./efforts.js";
+import { findEffort, nativeThinkValue, reasoningEffortValue, softSwitchMarker, templateKwargs, OFF_EFFORT_ID, } from "./efforts.js";
 import { applySoftSwitch, mapMessages, mapTools } from "./messages.js";
 import { getJson, postJson, readLines, resolveBearer } from "./http.js";
 import { buildNativeRequest, parseNativeStream } from "./native.js";
@@ -159,7 +159,7 @@ export class OllamaThinkAdapter extends LlmAdapter {
             ...(override?.description ? { description: override.description } : {}),
             inputModalities,
             context: { contextWindow },
-            defaultMaxTokens: this.cfg.defaultMaxTokens,
+            defaultMaxTokens: override?.maxTokens ?? this.cfg.defaultMaxTokens,
             ...(reasoning ? { reasoning } : {}),
         };
     }
@@ -191,19 +191,21 @@ export class OllamaThinkAdapter extends LlmAdapter {
         return { messages, requestImages: new Map(refs.map((ref, index) => [ref.attachmentId, versions[index]])) };
     }
     async *stream(options) {
-        const spec = options.reasoningEffort !== undefined
-            ? this.efforts.find((effort) => effort.id === options.reasoningEffort)
+        // The runtime validates the effort against the ids this adapter
+        // advertises before dispatch; the check keeps direct adapter use honest.
+        const applied = options.reasoningEffort !== undefined
+            ? findEffort(this.efforts, options.reasoningEffort)
             : undefined;
-        if (options.reasoningEffort !== undefined && !spec) {
+        if (options.reasoningEffort !== undefined && !applied) {
             throw new LlmError(`thinktune: reasoning effort "${options.reasoningEffort}" is not among the configured efforts ` +
                 `[${this.efforts.map((effort) => effort.id).join(', ')}]`, 'UNSUPPORTED_REASONING_EFFORT');
         }
-        const applied = spec ?? this.efforts.find((effort) => effort.id === this.cfg.defaultEffort);
         const { messages: imageProjected, requestImages } = await this.prepareImages(options, options.signal);
         const strategy = this.cfg.strategy;
         const bearer = resolveBearer(this.cfg.apiKeyEnv, process.env);
+        const messages = mapMessages({ system: options.system, messages: imageProjected }, { historyThinking: this.cfg.historyThinking, requestImages });
+        const tools = mapTools(options.tools);
         if (strategy === 'native' || strategy === 'soft-switch') {
-            const messages = mapMessages({ ...options, messages: [...imageProjected] }, { historyThinking: this.cfg.historyThinking, requestImages });
             if (strategy === 'soft-switch' && applied) {
                 applySoftSwitch(messages, softSwitchMarker(applied));
                 if (applied.id === OFF_EFFORT_ID && !messages.some((message) => message.role === 'user')) {
@@ -213,7 +215,7 @@ export class OllamaThinkAdapter extends LlmAdapter {
             const request = buildNativeRequest({
                 model: options.model,
                 messages,
-                tools: mapTools(options.tools),
+                tools,
                 temperature: options.temperature,
                 maxTokens: options.maxTokens,
                 stop: options.stop,
@@ -230,11 +232,10 @@ export class OllamaThinkAdapter extends LlmAdapter {
             yield* parseNativeStream(readLines(response, options.signal, this.cfg.streamIdleTimeoutMs));
             return;
         }
-        const messages = mapMessages({ ...options, messages: [...imageProjected] }, { historyThinking: this.cfg.historyThinking, requestImages });
         const request = buildOpenAIRequest({
             model: options.model,
             messages,
-            tools: mapTools(options.tools),
+            tools,
             temperature: options.temperature,
             maxTokens: options.maxTokens,
             stop: options.stop,

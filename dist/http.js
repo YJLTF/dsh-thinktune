@@ -1,5 +1,5 @@
 /**
- * Shared HTTP transport for both wire protocols: JSON POST with harness
+ * Shared HTTP transport for both wire protocols: JSON requests with harness
  * attribution headers, credential resolution, status-code → stable LlmError
  * code mapping, and an idle-timeout-guarded line reader over the response
  * body. Caller aborts surface as `ABORTED`; a read stall past
@@ -37,54 +37,34 @@ export function resolveBearer(apiKeyEnv, env) {
     }
     return assertUsableApiKey(raw, 'thinktune-ollama', `process.env.${apiKeyEnv}`);
 }
-/** POST one JSON request and return the raw response; non-2xx throws a coded LlmError. */
-export async function postJson(options) {
+/** Extract a human-readable message from an error body (JSON `error`/`message` or raw text). */
+function bodyMessage(text) {
+    if (text.length === 0)
+        return '';
+    try {
+        const parsed = JSON.parse(text);
+        if (typeof parsed.error === 'string')
+            return parsed.error;
+        if (parsed.error && typeof parsed.error === 'object' && 'message' in parsed.error) {
+            return String(parsed.error.message ?? text);
+        }
+        if (typeof parsed.message === 'string')
+            return parsed.message;
+    }
+    catch { }
+    return text;
+}
+/** Send one request with attribution and optional bearer headers; non-2xx throws a coded LlmError. */
+async function send(url, init, bearer) {
     const headers = {
-        'content-type': 'application/json',
+        ...init.headers,
         ...attributionHeaders(),
     };
-    if (options.bearer)
-        headers.authorization = `Bearer ${options.bearer}`;
-    let response;
-    try {
-        response = await fetch(options.url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(options.body),
-            signal: options.signal,
-        });
-    }
-    catch (error) {
-        if (isAbortReason(error))
-            throw new LlmError('thinktune: provider request aborted', 'ABORTED');
-        throw new LlmError(`thinktune: provider request failed: ${error.message}`, 'PROVIDER_UNAVAILABLE');
-    }
-    if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        let message = text;
-        try {
-            const parsed = JSON.parse(text);
-            if (typeof parsed.error === 'string')
-                message = parsed.error;
-            else if (parsed.error && typeof parsed.error === 'object' && 'message' in parsed.error) {
-                message = String(parsed.error.message ?? text);
-            }
-            else if (typeof parsed.message === 'string')
-                message = parsed.message;
-        }
-        catch { }
-        throw new LlmError(`thinktune: provider HTTP ${response.status}${message ? `: ${message}` : ''}`, httpErrorCode(response.status, message), { status: response.status });
-    }
-    return response;
-}
-/** GET helper for `/api/tags` with the same failure mapping. */
-export async function getJson(url, bearer, signal) {
-    const headers = { ...attributionHeaders() };
     if (bearer)
         headers.authorization = `Bearer ${bearer}`;
     let response;
     try {
-        response = await fetch(url, { method: 'GET', headers, signal });
+        response = await fetch(url, { ...init, headers });
     }
     catch (error) {
         if (isAbortReason(error))
@@ -92,12 +72,23 @@ export async function getJson(url, bearer, signal) {
         throw new LlmError(`thinktune: provider request failed: ${error.message}`, 'PROVIDER_UNAVAILABLE');
     }
     if (!response.ok) {
-        const text = await response.text().catch(() => '');
-        throw new LlmError(`thinktune: provider HTTP ${response.status}: ${text}`, httpErrorCode(response.status, text), {
-            status: response.status,
-        });
+        const message = bodyMessage(await response.text().catch(() => ''));
+        throw new LlmError(`thinktune: provider HTTP ${response.status}${message ? `: ${message}` : ''}`, httpErrorCode(response.status, message), { status: response.status });
     }
-    return response.json();
+    return response;
+}
+/** POST one JSON request and return the raw response; non-2xx throws a coded LlmError. */
+export function postJson(options) {
+    return send(options.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(options.body),
+        signal: options.signal,
+    }, options.bearer);
+}
+/** GET helper for `/api/tags` with the same failure mapping. */
+export function getJson(url, bearer, signal) {
+    return send(url, { method: 'GET', signal }, bearer).then((response) => response.json());
 }
 /**
  * Yield newline-delimited lines from a streaming JSON response body, guarding
@@ -117,7 +108,6 @@ export async function* readLines(response, signal, idleTimeoutMs) {
             timer = undefined;
         }
     };
-    const stall = () => new LlmError(`thinktune: provider stream idle past ${idleTimeoutMs}ms`, 'TIMEOUT');
     let completed = false;
     let stalled = false;
     try {
@@ -136,8 +126,9 @@ export async function* readLines(response, signal, idleTimeoutMs) {
             finally {
                 clearTimer();
             }
-            if (stalled)
-                throw stall();
+            if (stalled) {
+                throw new LlmError(`thinktune: provider stream idle past ${idleTimeoutMs}ms`, 'TIMEOUT');
+            }
             if (result.done)
                 break;
             if (signal?.aborted)

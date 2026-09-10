@@ -14,51 +14,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 import { OllamaThinkAdapter } from './adapter.ts'
-import type { ModelEntry } from './config.ts'
+import type { Config as PluginConfig } from './config.ts'
 import { resolveConfig } from './config.ts'
 import { DEFAULT_EFFORTS, parseEfforts } from './efforts.ts'
 import type { EffortEntry, Strategy } from './efforts.ts'
 
+export type Config = PluginConfig
+
 export const name = 'thinktune-ollama'
 export const inject = ['llm']
-
-export interface Config {
-  /** Provider routes this adapter registers (referenced as `provider` by agents). */
-  providers: string[]
-  /** Ollama base URL. */
-  endpoint: string
-  /** Optional env-var NAME holding a bearer token for gated endpoints; empty for none. */
-  apiKeyEnv?: string
-  /** Which thinking-control strategy the reasoning effort maps to. */
-  strategy: Strategy
-  /** `native` only: map low/medium/high to `think: "low"…` instead of `think: true`. */
-  nativeLevels: boolean
-  /** `reasoning-effort` only: wire value for `off` (`'none'`, `'minimal'`, or `'omit'`). */
-  offSentinel: string
-  /** Thinking capability: `auto` follows /api/show (assumes yes when unavailable); yes/no force it. */
-  assumeThinking: 'auto' | 'yes' | 'no'
-  /** Advertised reasoning efforts; defaults to off/low/medium/high. */
-  efforts: (string | EffortEntry)[]
-  /** Effort materialized into requests that omit one; leave unset for the provider default. */
-  defaultEffort?: string
-  defaultContextWindow: number
-  defaultMaxTokens: number
-  streamIdleTimeoutMs: number
-  /** Whether assistant reasoning blocks replay to the provider in history. */
-  historyThinking: 'strip' | 'keep'
-  /** Advisory model catalog with optional capacity overrides. */
-  models: ModelEntry[]
-  /** Image input capability: `auto` follows /api/show `vision`; `yes`/`no` force it. */
-  imageCapability: 'auto' | 'yes' | 'no'
-  /** Aspect-preserving pixel budget per request image (width × height). */
-  imageMaxPixels: number
-  /** Encoded-byte target per request image after re-encoding. */
-  imageMaxBytes: number
-  /** Images accepted per request; oldest occurrences degrade to placeholder text. */
-  imageMaxPerRequest: number
-  /** Accumulated raw image bytes accepted per request before offloading. */
-  imageMaxRequestBytes: number
-}
 
 const ConfigSchema = Schema.object({
   providers: Schema.array(Schema.string()).default(['ollama']).description('Provider routes to register'),
@@ -85,7 +49,7 @@ const ConfigSchema = Schema.object({
     ]),
   ).default(DEFAULT_EFFORTS.map((effort) => ({ ...effort })) as never)
     .description('Advertised reasoning efforts'),
-  defaultEffort: Schema.string().description('Effort applied when a request omits one'),
+  defaultEffort: Schema.string().description('Default effort the harness materializes for thinking-capable models'),
   defaultContextWindow: Schema.natural().default(32768).description('Fallback context window (tokens)'),
   defaultMaxTokens: Schema.natural().default(8192).description('Per-request output cap (tokens)'),
   streamIdleTimeoutMs: Schema.natural().default(300000).description('Max provider idle per stream read (ms)'),

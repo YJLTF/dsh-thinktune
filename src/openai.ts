@@ -7,6 +7,7 @@
  */
 import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
+import { TextBlockEmitter } from './blocks.ts'
 import type { WireMessage } from './messages.ts'
 import { ThinkTagSplitter } from './think-tag.ts'
 
@@ -102,15 +103,6 @@ interface OpenToolCall {
   index: number
 }
 
-interface OpenParserState {
-  openText?: { index: number; kind: 'reasoning' | 'text'; text: string }
-  toolCalls: Map<number, OpenToolCall>
-  nextIndex: number
-  finishReason?: string
-  usage?: { promptTokens?: number; completionTokens?: number }
-  splitter: ThinkTagSplitter
-}
-
 /**
  * Turn an SSE line iterable into harness chunks. Reasoning arrives via
  * `reasoning_content`/`reasoning` deltas or literal `<think>` tags inside
@@ -118,38 +110,12 @@ interface OpenParserState {
  * emitted before the single terminal finish chunk.
  */
 export async function* parseOpenAIStream(lines: AsyncIterable<string>): AsyncGenerator<StreamChunk> {
-  const state: OpenParserState = {
-    toolCalls: new Map(),
-    nextIndex: 0,
-    splitter: new ThinkTagSplitter(),
-  }
-
-  const closeText = async function* (): AsyncGenerator<StreamChunk> {
-    if (state.openText) {
-      yield {
-        type: 'block-end',
-        index: state.openText.index,
-        block: state.openText.kind === 'text'
-          ? { type: 'text', text: state.openText.text }
-          : { type: 'reasoning', text: state.openText.text },
-      }
-      state.openText = undefined
-    }
-  }
-
-  const emitText = async function* (text: string, kind: 'reasoning' | 'text'): AsyncGenerator<StreamChunk> {
-    if (text.length === 0) return
-    if (state.openText && state.openText.kind !== kind) yield* closeText()
-    if (!state.openText) {
-      state.openText = { index: state.nextIndex, kind, text: '' }
-      yield { type: 'block-start', index: state.nextIndex, blockType: kind }
-      state.nextIndex += 1
-    }
-    state.openText.text += text
-    yield kind === 'text'
-      ? { type: 'text-delta', index: state.openText.index, text }
-      : { type: 'reasoning-delta', index: state.openText.index, text }
-  }
+  const indices = { next: 0 }
+  const blocks = new TextBlockEmitter(indices)
+  const splitter = new ThinkTagSplitter()
+  const toolCalls = new Map<number, OpenToolCall>()
+  let finishReason: string | undefined
+  let usage: { promptTokens?: number; completionTokens?: number } | undefined
 
   for await (const line of lines) {
     if (!line.startsWith('data:')) continue
@@ -173,26 +139,27 @@ export async function* parseOpenAIStream(lines: AsyncIterable<string>): AsyncGen
         typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0
           ? delta.reasoning_content
           : typeof delta.reasoning === 'string' && delta.reasoning.length > 0 ? delta.reasoning : ''
-      if (reasoning) yield* emitText(reasoning, 'reasoning')
+      if (reasoning) yield* blocks.emit(reasoning, 'reasoning')
       if (typeof delta.content === 'string' && delta.content.length > 0) {
-        const split = state.splitter.split(delta.content)
-        yield* emitText(split.reasoning, 'reasoning')
-        yield* emitText(split.content, 'text')
+        const split = splitter.split(delta.content)
+        yield* blocks.emit(split.reasoning, 'reasoning')
+        yield* blocks.emit(split.content, 'text')
       }
       if (Array.isArray(delta.tool_calls)) {
         for (const call of delta.tool_calls) {
           const key = typeof call.index === 'number' ? call.index : 0
-          let entry = state.toolCalls.get(key)
+          let entry = toolCalls.get(key)
           if (!entry) {
+            const index = indices.next
+            indices.next += 1
             entry = {
               id: call.id ?? `call_${key}`,
               name: call.function?.name ?? '',
               arguments: '',
-              index: state.nextIndex,
+              index,
             }
-            state.toolCalls.set(key, entry)
-            state.nextIndex += 1
-            yield { type: 'block-start', index: entry.index, blockType: 'tool-call' }
+            toolCalls.set(key, entry)
+            yield { type: 'block-start', index, blockType: 'tool-call' }
           }
           if (call.id && !call.function?.name) {
             // Continuation fragments may carry only the id; keep the first.
@@ -212,39 +179,40 @@ export async function* parseOpenAIStream(lines: AsyncIterable<string>): AsyncGen
         }
       }
     }
-    if (choice?.finish_reason) state.finishReason = choice.finish_reason
+    if (choice?.finish_reason) finishReason = choice.finish_reason
     if (event.usage) {
-      state.usage = {
+      usage = {
         promptTokens: typeof event.usage.prompt_tokens === 'number' ? event.usage.prompt_tokens : undefined,
         completionTokens: typeof event.usage.completion_tokens === 'number' ? event.usage.completion_tokens : undefined,
       }
     }
   }
 
-  yield* closeText()
-  for (const entry of [...state.toolCalls.values()].sort((a, b) => a.index - b.index)) {
+  yield* blocks.close()
+  for (const entry of [...toolCalls.values()].sort((a, b) => a.index - b.index)) {
     yield {
       type: 'block-end',
       index: entry.index,
       block: { type: 'tool-call', id: ToolCallId(entry.id), name: entry.name, arguments: entry.arguments },
     }
   }
-  const flushed = state.splitter.flush()
-  if (flushed.reasoning) yield* emitText(flushed.reasoning, 'reasoning')
-  if (flushed.content) yield* emitText(flushed.content, 'text')
-  if (state.usage && (state.usage.promptTokens !== undefined || state.usage.completionTokens !== undefined)) {
-    const usage: TokenUsage = {
-      inputTokens: state.usage.promptTokens ?? 0,
-      outputTokens: state.usage.completionTokens ?? 0,
+  const flushed = splitter.flush()
+  if (flushed.reasoning) yield* blocks.emit(flushed.reasoning, 'reasoning')
+  if (flushed.content) yield* blocks.emit(flushed.content, 'text')
+  yield* blocks.close()
+  if (usage && (usage.promptTokens !== undefined || usage.completionTokens !== undefined)) {
+    const tokenUsage: TokenUsage = {
+      inputTokens: usage.promptTokens ?? 0,
+      outputTokens: usage.completionTokens ?? 0,
     }
-    if (state.usage.promptTokens !== undefined && state.usage.completionTokens !== undefined) {
-      usage.totalTokens = state.usage.promptTokens + state.usage.completionTokens
+    if (usage.promptTokens !== undefined && usage.completionTokens !== undefined) {
+      tokenUsage.totalTokens = usage.promptTokens + usage.completionTokens
     }
-    yield { type: 'usage', usage }
+    yield { type: 'usage', usage: tokenUsage }
   }
-  if (state.finishReason === undefined) {
+  if (finishReason === undefined) {
     throw new LlmError('thinktune: /v1/chat/completions stream ended without a finish reason', 'PROVIDER_HTTP_ERROR')
   }
-  const kind = state.finishReason === 'length' ? 'max-tokens' : state.finishReason === 'tool_calls' ? 'tool-calls' : 'stop'
+  const kind = finishReason === 'length' ? 'max-tokens' : finishReason === 'tool_calls' ? 'tool-calls' : 'stop'
   yield { type: 'finish', reason: { kind } }
 }

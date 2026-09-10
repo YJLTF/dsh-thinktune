@@ -1,9 +1,6 @@
 # Dependencies
 node_modules/
 
-# Local verification scratch (isolated DSH_HOME used by the e2e run)
-.e2e-home/
-
 # Logs
 *.log
 logs/

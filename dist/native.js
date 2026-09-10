@@ -6,14 +6,15 @@
  * already appended to the last user message.
  */
 import { LlmError, ToolCallId } from '@deepseek-ai/dsh-llm';
+import { TextBlockEmitter } from "./blocks.js";
 import { ThinkTagSplitter } from "./think-tag.js";
 function toolCallArguments(wire) {
     try {
         return JSON.parse(wire.arguments);
     }
     catch {
-        // Malformed stored arguments stay a string; Ollama tolerates it worse than
-        // an empty object, but a broken history must not silently vanish.
+        // A broken history must not silently vanish: degrade to an empty argument
+        // object rather than dropping the call.
         return {};
     }
 }
@@ -52,15 +53,6 @@ export function buildNativeRequest(options) {
         request.options = ollamaOptions;
     return request;
 }
-function openBlockBlock(block) {
-    return {
-        type: 'block-end',
-        index: block.index,
-        block: block.kind === 'text'
-            ? { type: 'text', text: block.text }
-            : { type: 'reasoning', text: block.text },
-    };
-}
 /**
  * Turn NDJSON `/api/chat` lines into harness chunks. Handles thinking deltas,
  * content deltas (including literal `<think>` tags), atomic tool calls,
@@ -68,33 +60,10 @@ function openBlockBlock(block) {
  * error objects and malformed lines.
  */
 export async function* parseNativeStream(lines, contentSplitter = new ThinkTagSplitter()) {
-    let open;
-    let nextIndex = 0;
+    const indices = { next: 0 };
+    const blocks = new TextBlockEmitter(indices);
     let toolCounter = 0;
     let finished = false;
-    const emitText = async function* (text, kind) {
-        if (text.length === 0)
-            return;
-        if (open && open.kind !== kind) {
-            yield openBlockBlock(open);
-            open = undefined;
-        }
-        if (!open) {
-            open = { index: nextIndex, kind, text: '' };
-            yield { type: 'block-start', index: nextIndex, blockType: kind };
-            nextIndex += 1;
-        }
-        open.text += text;
-        yield kind === 'text'
-            ? { type: 'text-delta', index: open.index, text }
-            : { type: 'reasoning-delta', index: open.index, text };
-    };
-    const closeOpen = async function* () {
-        if (open) {
-            yield openBlockBlock(open);
-            open = undefined;
-        }
-    };
     for await (const line of lines) {
         let event;
         try {
@@ -109,16 +78,16 @@ export async function* parseNativeStream(lines, contentSplitter = new ThinkTagSp
         const message = event.message;
         if (message) {
             if (typeof message.thinking === 'string' && message.thinking.length > 0) {
-                yield* emitText(message.thinking, 'reasoning');
+                yield* blocks.emit(message.thinking, 'reasoning');
             }
             if (typeof message.content === 'string' && message.content.length > 0) {
                 // Legacy stacks inline the trace as think tags inside content.
                 const split = contentSplitter.split(message.content);
-                yield* emitText(split.reasoning, 'reasoning');
-                yield* emitText(split.content, 'text');
+                yield* blocks.emit(split.reasoning, 'reasoning');
+                yield* blocks.emit(split.content, 'text');
             }
             if (Array.isArray(message.tool_calls)) {
-                yield* closeOpen();
+                yield* blocks.close();
                 for (const call of message.tool_calls) {
                     const name = call.function?.name;
                     if (typeof name !== 'string' || name.length === 0) {
@@ -130,8 +99,8 @@ export async function* parseNativeStream(lines, contentSplitter = new ThinkTagSp
                         : typeof raw === 'string' ? raw : JSON.stringify(raw);
                     const id = typeof call.id === 'string' && call.id.length > 0 ? call.id : `call_${toolCounter}`;
                     toolCounter += 1;
-                    const index = nextIndex;
-                    nextIndex += 1;
+                    const index = indices.next;
+                    indices.next += 1;
                     yield { type: 'block-start', index, blockType: 'tool-call' };
                     yield {
                         type: 'tool-call-delta',
@@ -149,7 +118,7 @@ export async function* parseNativeStream(lines, contentSplitter = new ThinkTagSp
             }
         }
         if (event.done) {
-            yield* closeOpen();
+            yield* blocks.close();
             const inputTokens = typeof event.prompt_eval_count === 'number' ? event.prompt_eval_count : undefined;
             const outputTokens = typeof event.eval_count === 'number' ? event.eval_count : undefined;
             if (inputTokens !== undefined || outputTokens !== undefined) {

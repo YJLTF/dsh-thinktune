@@ -316,6 +316,26 @@ test('template-kwarg strategy sends enable_thinking and thinking_budget', async 
   }
 })
 
+test('SSE tool-call fragments aggregate into a tool-call block with a tool-calls finish', async () => {
+  const { server, state } = await startMock()
+  try {
+    await setScenario(server, 'sse-tool')
+    const adapter = makeAdapter({ strategy: 'reasoning-effort' })
+    const chunks = await collect(adapter, userRequest({ reasoningEffort: 'low', tools: [{
+      name: 'get_weather', description: 'weather', parameters: { type: 'object' },
+    }] }))
+    const block = chunks.find((c) => c.type === 'block-end' && c.block.type === 'tool-call').block
+    assert.equal(block.id, 'call_abc')
+    assert.equal(block.name, 'get_weather')
+    assert.deepEqual(JSON.parse(block.arguments), { city: 'Hangzhou' })
+    const usage = chunks.find((c) => c.type === 'usage')
+    assert.equal(usage.usage.totalTokens, 50)
+    assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+  } finally {
+    server.close()
+  }
+})
+
 test('inline <think> tags in content split into reasoning and text blocks', async () => {
   const { server, state } = await startMock()
   try {
@@ -535,7 +555,6 @@ test('reasoning-effort strategy: images become data-URI content parts', async ()
     ]))
     const adapter = makeAdapter({ strategy: 'reasoning-effort' }, undefined, () => store)
     await collect(adapter, userRequest({
-      strategy: undefined,
       reasoningEffort: 'low',
       messages: [imageMessage('Describe', [imageRef('att_1')])],
     }))

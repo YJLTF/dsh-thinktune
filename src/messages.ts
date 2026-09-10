@@ -123,7 +123,10 @@ function mapMessage(message: Message, opts: MapMessagesOptions): WireMessage[] {
 }
 
 /** Map the harness request history (plus the one-shot `system` prompt) to wire messages. */
-export function mapMessages(options: GenerateOptions, opts: MapMessagesOptions): WireMessage[] {
+export function mapMessages(
+  options: Pick<GenerateOptions, 'system'> & { messages: readonly Message[] },
+  opts: MapMessagesOptions,
+): WireMessage[] {
   const wired: WireMessage[] = []
   if (options.system !== undefined && options.system.length > 0) {
     wired.push({ role: 'system', content: options.system })

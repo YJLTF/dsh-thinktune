@@ -1,5 +1,5 @@
 /**
- * Shared HTTP transport for both wire protocols: JSON POST with harness
+ * Shared HTTP transport for both wire protocols: JSON requests with harness
  * attribution headers, credential resolution, status-code → stable LlmError
  * code mapping, and an idle-timeout-guarded line reader over the response
  * body. Caller aborts surface as `ABORTED`; a read stall past
@@ -36,42 +36,36 @@ export function resolveBearer(apiKeyEnv: string, env: NodeJS.ProcessEnv): string
   return assertUsableApiKey(raw, 'thinktune-ollama', `process.env.${apiKeyEnv}`)
 }
 
-export interface PostJsonOptions {
-  url: string
-  body: unknown
-  bearer?: string
-  signal?: AbortSignal
+/** Extract a human-readable message from an error body (JSON `error`/`message` or raw text). */
+function bodyMessage(text: string): string {
+  if (text.length === 0) return ''
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown; message?: unknown }
+    if (typeof parsed.error === 'string') return parsed.error
+    if (parsed.error && typeof parsed.error === 'object' && 'message' in parsed.error) {
+      return String((parsed.error as { message?: unknown }).message ?? text)
+    }
+    if (typeof parsed.message === 'string') return parsed.message
+  } catch {}
+  return text
 }
 
-/** POST one JSON request and return the raw response; non-2xx throws a coded LlmError. */
-export async function postJson(options: PostJsonOptions): Promise<Response> {
+/** Send one request with attribution and optional bearer headers; non-2xx throws a coded LlmError. */
+async function send(url: string, init: RequestInit, bearer: string | undefined): Promise<Response> {
   const headers: Record<string, string> = {
-    'content-type': 'application/json',
+    ...(init.headers as Record<string, string> | undefined),
     ...attributionHeaders(),
   }
-  if (options.bearer) headers.authorization = `Bearer ${options.bearer}`
+  if (bearer) headers.authorization = `Bearer ${bearer}`
   let response: Response
   try {
-    response = await fetch(options.url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(options.body),
-      signal: options.signal,
-    })
+    response = await fetch(url, { ...init, headers })
   } catch (error) {
     if (isAbortReason(error)) throw new LlmError('thinktune: provider request aborted', 'ABORTED')
     throw new LlmError(`thinktune: provider request failed: ${(error as Error).message}`, 'PROVIDER_UNAVAILABLE')
   }
   if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    let message = text
-    try {
-      const parsed = JSON.parse(text) as { error?: unknown; message?: unknown }
-      if (typeof parsed.error === 'string') message = parsed.error
-      else if (parsed.error && typeof parsed.error === 'object' && 'message' in parsed.error) {
-        message = String((parsed.error as { message?: unknown }).message ?? text)
-      } else if (typeof parsed.message === 'string') message = parsed.message
-    } catch {}
+    const message = bodyMessage(await response.text().catch(() => ''))
     throw new LlmError(
       `thinktune: provider HTTP ${response.status}${message ? `: ${message}` : ''}`,
       httpErrorCode(response.status, message),
@@ -81,24 +75,30 @@ export async function postJson(options: PostJsonOptions): Promise<Response> {
   return response
 }
 
+export interface PostJsonOptions {
+  url: string
+  body: unknown
+  bearer?: string
+  signal?: AbortSignal
+}
+
+/** POST one JSON request and return the raw response; non-2xx throws a coded LlmError. */
+export function postJson(options: PostJsonOptions): Promise<Response> {
+  return send(
+    options.url,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(options.body),
+      signal: options.signal,
+    },
+    options.bearer,
+  )
+}
+
 /** GET helper for `/api/tags` with the same failure mapping. */
-export async function getJson(url: string, bearer?: string, signal?: AbortSignal): Promise<unknown> {
-  const headers: Record<string, string> = { ...attributionHeaders() }
-  if (bearer) headers.authorization = `Bearer ${bearer}`
-  let response: Response
-  try {
-    response = await fetch(url, { method: 'GET', headers, signal })
-  } catch (error) {
-    if (isAbortReason(error)) throw new LlmError('thinktune: provider request aborted', 'ABORTED')
-    throw new LlmError(`thinktune: provider request failed: ${(error as Error).message}`, 'PROVIDER_UNAVAILABLE')
-  }
-  if (!response.ok) {
-    const text = await response.text().catch(() => '')
-    throw new LlmError(`thinktune: provider HTTP ${response.status}: ${text}`, httpErrorCode(response.status, text), {
-      status: response.status,
-    })
-  }
-  return response.json()
+export function getJson(url: string, bearer?: string, signal?: AbortSignal): Promise<unknown> {
+  return send(url, { method: 'GET', signal }, bearer).then((response) => response.json())
 }
 
 /**
@@ -122,7 +122,6 @@ export async function* readLines(
       timer = undefined
     }
   }
-  const stall = () => new LlmError(`thinktune: provider stream idle past ${idleTimeoutMs}ms`, 'TIMEOUT')
   let completed = false
   let stalled = false
   try {
@@ -140,7 +139,9 @@ export async function* readLines(
       } finally {
         clearTimer()
       }
-      if (stalled) throw stall()
+      if (stalled) {
+        throw new LlmError(`thinktune: provider stream idle past ${idleTimeoutMs}ms`, 'TIMEOUT')
+      }
       if (result.done) break
       if (signal?.aborted) throw new LlmError('thinktune: provider stream aborted', 'ABORTED')
       buffer += decoder.decode(result.value, { stream: true })

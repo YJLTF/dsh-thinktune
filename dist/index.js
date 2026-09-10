@@ -27,7 +27,7 @@ const ConfigSchema = Schema.object({
         }),
     ])).default(DEFAULT_EFFORTS.map((effort) => ({ ...effort })))
         .description('Advertised reasoning efforts'),
-    defaultEffort: Schema.string().description('Effort applied when a request omits one'),
+    defaultEffort: Schema.string().description('Default effort the harness materializes for thinking-capable models'),
     defaultContextWindow: Schema.natural().default(32768).description('Fallback context window (tokens)'),
     defaultMaxTokens: Schema.natural().default(8192).description('Per-request output cap (tokens)'),
     streamIdleTimeoutMs: Schema.natural().default(300000).description('Max provider idle per stream read (ms)'),

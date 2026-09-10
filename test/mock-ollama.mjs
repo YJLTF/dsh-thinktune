@@ -1,9 +1,9 @@
 /**
  * Scriptable mock of the Ollama HTTP surface used by the thinktune tests:
  * `/api/tags`, `/api/show`, `/api/chat` (NDJSON), and
- * `/v1/chat/completions` (SSE). Scenarios are selected per request model or
- * via the `POST /__scenario` control endpoint; recorded request bodies are
- * exposed through `GET /__dump` for wire-shape assertions.
+ * `/v1/chat/completions` (SSE). Scenarios are selected via the
+ * `POST /__scenario` control endpoint; recorded request bodies are exposed
+ * through `state` for wire-shape assertions.
  */
 import { createServer } from 'node:http'
 
@@ -12,11 +12,8 @@ export function createMockOllama() {
     scenario: 'thinking',
     lastChatBody: undefined,
     lastOpenAIBody: undefined,
-    chatBodies: [],
-    openAIBodies: [],
     chatCalls: 0,
     openAICalls: 0,
-    showCalls: 0,
   }
 
   const MODELS = {
@@ -27,10 +24,6 @@ export function createMockOllama() {
     'qwen3.8:27b': {
       capabilities: ['completion', 'tools', 'thinking', 'vision'],
       model_info: { 'qwen3vl.context_length': 262144 },
-    },
-    'qwen3:custom-budget': {
-      capabilities: ['completion', 'tools', 'thinking'],
-      model_info: {},
     },
     'llama3:8b': {
       capabilities: ['completion', 'tools'],
@@ -79,21 +72,6 @@ export function createMockOllama() {
       })
       return
     }
-    if (url.pathname === '/__dump') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(state))
-      return
-    }
-    if (url.pathname === '/__reset') {
-      state.lastChatBody = undefined
-      state.lastOpenAIBody = undefined
-      state.chatBodies = []
-      state.openAIBodies = []
-      state.chatCalls = 0
-      state.openAICalls = 0
-      res.writeHead(204).end()
-      return
-    }
 
     if (url.pathname === '/api/tags' && req.method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
@@ -108,7 +86,6 @@ export function createMockOllama() {
     }
 
     if (url.pathname === '/api/show' && req.method === 'POST') {
-      state.showCalls += 1
       void collect().then((body) => {
         const info = MODELS[(JSON.parse(body)).model]
         if (!info) {
@@ -127,8 +104,6 @@ export function createMockOllama() {
       void collect().then((body) => {
         const parsed = JSON.parse(body)
         state.lastChatBody = parsed
-        if (state.chatBodies.length < 20) state.chatBodies.push(parsed)
-        else state.chatBodies[state.chatCalls % 20] = parsed
         const scenario = state.scenario
         if (scenario === 'server-error') {
           res.writeHead(500, { 'content-type': 'application/json' })
@@ -178,13 +153,6 @@ export function createMockOllama() {
           ])
           return
         }
-        if (scenario === 'no-thinking-capability') {
-          ndjson(res, [
-            { model: parsed.model, message: { role: 'assistant', content: 'plain' }, created_at: 0 },
-            { model: parsed.model, message: { role: 'assistant', content: '' }, done: true, done_reason: 'stop' },
-          ])
-          return
-        }
         if (scenario === 'slow') {
           ndjson(res, [
             { model: parsed.model, message: { role: 'assistant', thinking: 'slow start' }, created_at: 0 },
@@ -208,13 +176,7 @@ export function createMockOllama() {
       void collect().then((body) => {
         const parsed = JSON.parse(body)
         state.lastOpenAIBody = parsed
-        if (state.openAIBodies.length < 20) state.openAIBodies.push(parsed)
         const scenario = state.scenario
-        if (scenario === 'sse-400') {
-          res.writeHead(400, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: { message: 'maximum context length exceeded' } }))
-          return
-        }
         if (scenario === 'sse-tool') {
           sse(res, [
             { choices: [{ delta: { role: 'assistant', tool_calls: [{ index: 0, id: 'call_abc', function: { name: 'get_weather', arguments: '{"city"' } }] } }] },
