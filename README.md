@@ -65,40 +65,66 @@ dsh 的请求在分发前是**深度冻结**的，插件不能改写请求——
 
 ## 安装
 
-插件以本地 patch 插件形式挂载，三步：
+> **为什么有两种方式？** dsh 的插件加载器用 Node 的 TypeScript 类型剥离加载 `.ts` 插件，而 Node **拒绝处理 `node_modules` 目录下的 TS 文件**——如果你看到 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`，就是把 `src/index.ts` 安装进了 profile 的 `node_modules`。因此：包安装走编译好的 `dist/index.js` 入口（方式 A），只有 `node_modules` 之外的源码直连才用 TS（方式 B）。
 
-**1. 安装插件依赖**（供类型检查与本地测试；运行时按鸭子类型对接宿主）：
+### 方式 A：包安装（推荐）
 
-```sh
-cd F:/project/dsh-thinktune
-pnpm install
-```
+仓库已提交 `dist/` 构建产物，安装无需本地工具链；若自己改了 `src/`，先 `pnpm install && pnpm build` 重新生成。
 
-**2. 在 profile 的 patch 层注册插件并指默认模型**
+1. 克隆或下载本仓库到本地任意位置：
+   ```sh
+   git clone https://github.com/YJLTF/dsh-thinktune.git
+   ```
+2. 把它装进 profile（二选一）：
+   ```sh
+   # dsh 插件管理
+   dsh plugin --profile web add F:/path/to/dsh-thinktune
+   ```
+   或手动编辑 `$DSH_HOME/profiles/web/package.json` 后在该目录 `pnpm install`：
+   ```json
+   {
+     "dependencies": {
+       "dsh-thinktune": "file:F:/path/to/dsh-thinktune"
+     }
+   }
+   ```
+3. 在 profile 的 `cordis.patch.yml` 里用**包名**引用（会解析到 `dist/index.js`）：
+   ```yaml
+   - insert:
+       - id: llm-thinktune
+         name: 'dsh-thinktune'
+         config:
+           providers:
+             - ollama
+           endpoint: 'http://127.0.0.1:11434'
+           strategy: native
+   ```
 
-编辑 `$DSH_HOME/profiles/<你的profile>/cordis.patch.yml`（Windows 下通常是 `C:\Users\<你>\.dsh\profiles\web\cordis.patch.yml`）：
+### 方式 B：源码直连（开发模式）
+
+`name` 写绝对路径指向 `src/index.ts`（在 `node_modules` 之外，类型剥离可用）：
 
 ```yaml
 - insert:
-    # 思考强度控制：Ollama 适配器
     - id: llm-thinktune
-      name: 'F:/project/dsh-thinktune/src/index.ts'   # 必须是绝对路径
-      config:
-        providers:
-          - ollama                       # agent 里的 provider 名，可自定义
-        endpoint: 'http://127.0.0.1:11434'
-        strategy: native                 # native | soft-switch | reasoning-effort | template-kwarg
+      name: 'F:/project/dsh-thinktune/src/index.ts'
+      config: { /* 同上 */ }
+```
 
-# 把默认 agent 模型指到 Ollama
+需要先在插件目录 `pnpm install`。改完源码重启/HMR 即生效，无需构建；跑测试用 `pnpm test`。
+
+### 指定默认模型与思考档位（两种方式都需要）
+
+profile patch 把默认模型指过去：
+
+```yaml
 - id: agent-default-model
   config:
     provider: ollama
     model: qwen3.8:27b
 ```
 
-**3. 设置默认思考档位**
-
-写在 `$DSH_HOME/settings.yaml`（与 Web UI 模型选择器落盘的是同一个位置）：
+再在 `$DSH_HOME/settings.yaml` 设置档位（与 Web UI 模型选择器落盘的是同一个位置）：
 
 ```yaml
 agent-default-model:
@@ -172,7 +198,7 @@ DSH_HOME=<隔离目录> dsh --profile <你的profile> "Reply with exactly: PONG"
 ## 文件结构
 
 ```
-src/index.ts      插件入口：Config schema + registerAdapter
+src/index.ts      插件入口（TS 源）：Config schema + registerAdapter
 src/adapter.ts    OllamaThinkAdapter（能力声明 / 图片预备 / stream 分发）
 src/efforts.ts    统一档位词表与四种策略的线上映射
 src/messages.ts   harness 消息 → 线上消息（system/user/assistant/tool、图片、reasoning）
@@ -181,4 +207,5 @@ src/openai.ts     /v1/chat/completions 请求构建 + SSE 解析
 src/think-tag.ts  <think>…</think> 增量分离器
 src/http.ts       归因头、凭据解析、空闲超时读行、错误码映射
 src/config.ts     配置归一化
+dist/             编译产物（pnpm build 生成，包安装的加载入口）
 ```

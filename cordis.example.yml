@@ -2,18 +2,22 @@
 # 用法一（推荐）：合并进 $DSH_HOME/profiles/<profile>/cordis.patch.yml 的用户 patch 层；
 # 用法二：作为独立 overlay 传入：dsh web --patch ./cordis.example.yml
 #
+# name 两种写法：
+#   'dsh-thinktune'                 → 包安装（profile 依赖），解析到 dist/index.js
+#   'F:/path/to/dsh-thinktune/src/index.ts' → 源码直连（node_modules 之外才允许 TS）
+#
 # provider 路由注册后，默认模型与档位建议写在 $DSH_HOME/settings.yaml
 # （与 Web UI 模型选择器写入的是同一位置）：
 #
 #   agent-default-model:
 #     provider: ollama
-#     model: qwen3:27b
+#     model: qwen3.8:27b
 #     reasoningEffort: low
 
 - insert:
     # 思考强度控制：Ollama 适配器（可改 strategy 切换控制协议）
     - id: llm-thinktune
-      name: 'F:/project/dsh-thinktune/src/index.ts'
+      name: 'dsh-thinktune'
       config:
         providers:
           - ollama
@@ -36,4 +40,4 @@
     - id: agent-default-model
       config:
         provider: ollama
-        model: qwen3:27b
+        model: qwen3.8:27b

@@ -21,6 +21,6 @@ desktop.ini
 .vscode/
 *.swp
 
-# Build output (plugin ships as TypeScript sources)
-dist/
-*.tsbuildinfo
+# Build output is COMMITTED (dist/index.js is the package entry that cordis
+# loads under node_modules, where Node refuses to strip TypeScript types).
+# Regenerate with `pnpm build` after changing src/.
